@@ -1,0 +1,142 @@
+#!/bin/bash
+
+function usage ()
+{
+    echo "Usage :  $0 [options] <commit>
+
+    Checks code style compliance of files changed since git <commit> using
+    .clang-format file.  Only pays attention to added, changed, or modified
+    files.  Return 0 if all files conform to code style, and otherwise if any
+    file does not conform.
+
+    This tool requires clang-format and git to be available in the path.
+
+    Options:
+    -h            Display this message and exit
+    -v            Verbose output
+    -p            Pathspec (in quotes) used to filter files passed to formatter
+    -d            git diff --diff-filter args. Defaults to \"ACM\".
+    -w            Print warning if the index and working directory are not in
+                  pristine state.
+    -W            Abort with error if the index and working directory are not
+                  in pristine state. This takes precedence over -w if defined."
+
+}
+
+function die ()
+{
+    echo -e "$*" >&2
+    exit 1
+}
+
+function die_usage ()
+{
+    echo -e "$*""\n" >&2
+    usage
+    exit 1
+}
+
+if [[ -z "$(command -v clang-format)" ]]; then
+    die "Dependency clang-format not found in path."
+fi
+
+if [[ -z "$(command -v git)" ]]; then
+    die "Dependency git not found in path."
+fi
+
+# Initialize options
+VERBOSE=0
+CHECK_TREE=0
+CHECK_TREE_ABORT=0
+PATH_SPEC=""
+DIFF_FILTER=""
+
+# Handle command line arguments
+while getopts ":hvp:d:wW" opt
+do
+  case $opt in
+
+    h )
+        usage
+        exit 0
+        ;;
+
+    v )
+        VERBOSE=1
+        ;;
+
+    p )
+        PATHSPEC="$OPTARG"
+        ;;
+
+    d )
+        DIFF_FILTER="$OPTARG"
+        ;;
+
+    w )
+        CHECK_TREE=1
+        ;;
+
+    W )
+        CHECK_TREE_ABORT=1
+        ;;
+
+    * )
+        die_usage "Option does not exist: ""$OPTARG"
+        ;;
+
+  esac
+done
+shift $(($OPTIND-1))
+
+if [[ $# -lt 1 ]]; then
+    die_usage "Incorrect usage of arguments"
+fi
+
+if [[ "$CHECK_TREE_ABORT" > 0 ]]; then
+    CHECK_TREE=1
+fi
+
+COMMIT="$1"
+if [[ -z "$DIFF_FILTER" ]]; then
+    DIFF_FILTER="ACM"
+fi
+
+GITDESC=$(git describe --dirty --broken)
+if [[ "$CHECK_TREE" > 0 && ("$GITDESC" =~ .*dirty || "$GITDESC" =~ .*broken) ]]; then
+    if [[ "$CHECK_TREE_ABORT" > 0 ]]; then
+        die "Dirty Index ... Aborting"
+    fi
+    echo "Dirty index"
+fi
+
+if [[ "$CHECK_TREE" > 0 && ! -z "$(git ls-files --others --exclude-standard)" ]]; then
+    if [[ "$CHECK_TREE_ABORT" > 0 ]]; then
+        die "Untracked files ... Aborting"
+    fi
+    echo "Untracked files"
+fi
+
+RESULT=0
+FILELIST=$(git diff --cached --name-only --diff-filter="$DIFF_FILTER" "$COMMIT" -- $PATHSPEC)
+for f in $FILELIST; do
+    if [[ "$VERBOSE" == 1 ]]; then
+        echo -n "> $f"" "
+    fi
+    clang-format -style=file "$f" | diff -w "$f" - >/dev/null 2>&1;
+    FMTRESULT="$?"
+    if [[ "$FMTRESULT" != 0 ]]; then
+        RESULT=1
+        if [[ "$VERBOSE" == 1 ]]; then
+            echo " NON-COMPLIANT"
+        fi
+    else
+        if [[ "$VERBOSE" == 1 ]]; then
+            echo " OK"
+        fi
+    fi
+done
+
+echo "... Done"
+
+exit "$RESULT"
